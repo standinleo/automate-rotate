@@ -1,0 +1,125 @@
+name: Rotate platform tokens
+
+on:
+  # Every 180 days — runs on the 1st of January and July at 09:00 UTC
+  # Adjust months to match your desired start window
+  schedule:
+    - cron: '0 9 1 1,7 *'
+
+  # Allow manual trigger (for forced rotation or dry-run validation)
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to rotate (leave blank for all)'
+        required: false
+        default: ''
+        type: choice
+        options:
+          - ''
+          - jfrog
+          - github
+          - azure
+      dry_run:
+        description: 'Dry-run only (validate connectivity, no changes)'
+        required: false
+        default: 'false'
+        type: boolean
+      force:
+        description: 'Force rotation (skip 180-day gate)'
+        required: false
+        default: 'false'
+        type: boolean
+
+jobs:
+  rotate:
+    name: Rotate tokens
+    runs-on: ubuntu-latest
+    # Prevent concurrent rotation runs
+    concurrency:
+      group: token-rotation
+      cancel-in-progress: false
+
+    permissions:
+      contents: read
+      id-token: write  # Required for OIDC auth to Vault (recommended over static token)
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Option A: Authenticate to Vault via OIDC (recommended for production)
+      # Uncomment and configure if your OpenBao supports JWT/OIDC auth
+      # - name: Get Vault token via OIDC
+      #   uses: hashicorp/vault-action@v3
+      #   with:
+      #     url: ${{ secrets.VAULT_ADDR }}
+      #     method: jwt
+      #     role: token-rotator
+      #     jwtGithubAudience: https://github.com/<your-org>
+      #     secrets: |
+      #       secret/data/rotation/bootstrap admin_token | JFROG_ADMIN_TOKEN ;
+
+      - name: Build rotate command
+        id: cmd
+        run: |
+          CMD="python rotate.py"
+          if [[ "${{ github.event.inputs.platform }}" != "" ]]; then
+            CMD="$CMD --platform ${{ github.event.inputs.platform }}"
+          fi
+          if [[ "${{ github.event.inputs.dry_run }}" == "true" ]]; then
+            CMD="$CMD --dry-run"
+          fi
+          if [[ "${{ github.event.inputs.force }}" == "true" ]]; then
+            CMD="$CMD --force"
+          fi
+          echo "cmd=$CMD" >> $GITHUB_OUTPUT
+          echo "Running: $CMD"
+
+      - name: Run rotation
+        run: ${{ steps.cmd.outputs.cmd }}
+        env:
+          # OpenBao — use AppRole in production
+          VAULT_ADDR:       ${{ secrets.VAULT_ADDR }}
+          VAULT_ROLE_ID:    ${{ secrets.VAULT_ROLE_ID }}
+          VAULT_SECRET_ID:  ${{ secrets.VAULT_SECRET_ID }}
+          VAULT_NAMESPACE:  ${{ secrets.VAULT_NAMESPACE }}
+          VAULT_KV_MOUNT:   ${{ secrets.VAULT_KV_MOUNT }}
+
+          # JFrog — bootstrap admin token (only needed for first run; stored in vault after)
+          JFROG_URL:          ${{ secrets.JFROG_URL }}
+          JFROG_ADMIN_TOKEN:  ${{ secrets.JFROG_ADMIN_TOKEN }}
+
+          # GitHub App
+          GITHUB_APP_ID:           ${{ secrets.GH_APP_ID }}
+          GITHUB_INSTALLATION_ID:  ${{ secrets.GH_APP_INSTALLATION_ID }}
+
+          # Azure
+          AZURE_TENANT_ID:     ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID:     ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_APP_OBJECT_ID: ${{ secrets.AZURE_APP_OBJECT_ID }}
+
+          # Notifications (optional)
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+          # Rotation config (optional overrides)
+          ROTATION_DAYS:       '180'
+          SECRET_LIFETIME_DAYS: '185'
+
+      - name: Upload rotation log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rotation-log-${{ github.run_id }}
+          path: |
+            *.log
+          retention-days: 90
+          if-no-files-found: ignore
