@@ -1,0 +1,13 @@
+# Core
+hvac>=2.1.0            # OpenBao / Vault client
+requests>=2.31.0       # HTTP calls to JFrog, GitHub, Azure Graph
+
+# GitHub App JWT signing (either works; cryptography is the fallback)
+PyJWT[crypto]>=2.8.0
+cryptography>=41.0.0
+
+# Azure (no heavy SDK needed — we use Graph REST API directly)
+# azure-identity and azure-mgmt-graphrbac are NOT required
+# If you prefer the official SDK, uncomment:
+# azure-identity>=1.15.0
+# msgraph-sdk>=1.0.0
